@@ -1,0 +1,231 @@
+
+Understanding callbacks and promises:
+
+I. A Callback is a function passed as an argument to a function, that is to be
+called when the called function finishes its task.
+
+Use case:
+	let len = obj.doCallBack(arg1, arg2, function(data) {
+		console.log(data);
+	});
+
+In the definition:
+	obj.doCallBack = function(arg1, arg2, fn) {
+		let data = doStuff(arg1, arg2);
+		fn(data);
+		return data.length;
+	}
+
+This is still all synchronous, and the callback function will be called before
+the variable ref is assigned.  Unless doStuff() or doCallBack() are somehow
+asynchronous, which is the next step.  But until then, this is equivalent to C:
+
+int doCallBack(int arg1, int arg2, void (*fn)(char *)) {
+	// char *doStuff(int arg1, int arg2);
+	char *data = doStuff(arg1, arg2);
+	fn(data);
+	return strlen(data);
+}
+
+void myCallBack(char *data) {
+	printf("%s\n", data);
+}
+
+// in main()
+// int arg1, arg2, assigned
+int len = doCallBack(arg1, arg2, myCallBack);
+
+One way in which a callbacks might not be called immediately is if it's merely
+being registered, to be called when a function call later on in the main
+execution thread sees the registered callback and calls it.  This is still part
+of the main execution thread, and is therefore still synchronous (and the C
+analogy above continues to hold true).
+
+II. In JavaScript, we introduce asynchronous execution in one of two ways:
+	1) Events - event handlers will be called after the main thread has completed.
+	2) The setTimeout() family of methods, which also call their callbacks only
+		after the main thread has completed.
+	(JavaScript is not, under normal circumstances, multi-threaded).
+So, where a C program might do its setup and then go into a polling event loop, a
+JavaScript program might do its setup and then let the main loop end, the program
+not ending because the interpreter (JS engine) is still running its event loop or
+remembering timeouts.
+
+With asynchronous callbacks, the callback function is called when the event is
+fired, after the main thread ends.  There can be no planning as to exactly when,
+as it depends on external circumstances, often in the real world.  There is,
+then, no way for an asynchronous callback to return a value to the code that set
+it up.
+
+III. Promises are a way to write callbacks that appear more like regular coding.
+Often, having several callbacks in a row results in "callback hell", a
+programming style that is visually messy and unwieldy.  A Promise is an object
+that is created with an asynchronous task and references one or more callback
+functions, to be called when the task completes.  Which of the callback functions
+is called depends on the task's resolution.
+
+In JavaScript, a Promise is created (directly or indirectly) with the Promise
+constructor.  It is also returned by several API functions involving I/O, such
+as fetch().  (The Promise constructor also contains several convenience methods
+that create promises with multiple tasks or promises that are pre-settled).  The
+Promise constructor takes in a function that will be its task.  The constructor
+calls this function, known as an executor, passing in two callback functions:
+one to be called if the task completes successfully, and one to be called if the
+task fails.  Each of these functions, resolve and reject, takes a single
+argument, either the return value of the promise or the reason for the failure.
+
+The executor function is supplied by the programmer, and is responsible for
+calling the resolve() and reject() callbacks with the correct values at the
+appropriate time.  The asynchronicity is introduced in the executor function,
+generally via events or timeouts (see above) or other promises, but is passed
+on to the promise's handlers.  (The advantage is that while the resolve and
+reject callbacks must still be in scope when they are called, no part of the
+executor function need be in scope when the promise's handlers are called.)
+The return value, success or failure, from the executor function must be supplied
+via the resolve or reject callbacks; the return value from the executor method
+itself is ignored.  If an exception is thrown by the executor method, the promise
+is rejected (the failure method is called with the exception as a reason).
+
+A Promise object has a state, either pending (neither the resolve nor the reject
+callbacks have yet been called), fulfilled (the executor called the resolve()
+callback), or rejected (the executor called the reject() callback).  The last
+two are sometimes called settled, i.e. either fulfilled or rejected, but no
+longer pending.  The resolve() and reject() callbacks, supplied by the Promise
+constructor to the executor, change the Promise's state and begin calling any
+registered callbacks (handlers).
+
+After a Promise object has been created, success and failure handlers can be
+added to it by calling its .then(), .catch(), and .finally() methods.  The
+.then() method registers a handler to be called when the promise is fulfilled,
+the .catch() method registers a handler to be called when the promise is
+rejected, and the .finally() method registers a handler to be called when the
+promise is settled, whether fulfilled or rejected.  These methods each take a
+handler, i.e. a a callback function to be called, asynchronously, when the task
+is settled (i.e. when the executor function calls either of its resolve() or
+reject() callbacks).  The .then() method can be called with two handler
+arguments, to be called when the promise is fulfilled and rejected, respectively.
+If the Promise is already settled when one of the handler registration methods
+is called, the handler is still called asynchronously, at the beginning of the
+next event cycle (e.g. with setTimeout(..., 0)); code following the call to
+.next() will be executed before the handler passed to .next(), for example.
+
+The handler functions registered with .then() are called with the value passed
+by the executor to it's resolve() parameter; those registered with .catch() (or
+.next()'s second argument) are called with the reason passed by the executor to
+it's reject() parameter (or the exception the executor threw and was caught by
+the Promise constructor).  Handlers registered with .finally() are not called
+with any arguments.  The handler registration methods themselves each return a
+new Promise object (not the one they were called on), reflecting the result of
+the called handler (the result of the original promise is unchanged):
+	If the handler ...,		the new promise is ...		with this result:
+	- Returns a value		fulfilled					the returned value
+	- Throws an error		rejected					the thrown error
+	- Returns nothing		fulfilled					undefined
+	- A fulfilled promise	fulfilled					the fulfilled's value
+	- A rejected promise	rejected					the rejected's reason
+	- A pending promise		pending						the pending's result
+
+The major advantage of the fact that .next() returns a new Promise is that calls
+to .then() can be chained, each call to .then() containing a handler that waits
+for the previous .then()'s handler to complete successfully before it executes,
+yet never tying up the JavaScript engine's event loop.  Because of the way .then
+propogates failures and rejected promises, appending a single .catch() to the
+end of a promise chain will catch any errors caused by any .then() handler in
+the chain.
+
+IV. Wrapping a Callback API in a or vice versa is fairly easy.  For
+example, the setTimeout() Web API (from the HTML DOM, also available in Node.js)
+is a callback API, with the following (C-like) synopsis:
+	/*int*/ function setTimeout(/*function*/ callback, /*int*/ milliseconds);
+
+To promisify it (make it into a promise), we can write:
+	/* [Promise] */ function timeoutPromise(/*int*/ milliseconds) {
+		let promise = new Promise(function(resolve, reject) {
+			setTimeout(function() {
+				resolve();
+			}, milliseconds);
+		});
+		return promise;
+	}
+... which becomes, shortened with arrow functions:
+	function timeoutPromise(int milliseconds) {
+		return new Promise((resolve, reject) =>
+				setTimeout(() => resolve(), milliseconds));
+	}
+
+The use case changes from:
+	setTimeout(() => something(), 5000);
+to:
+	timeoutPromise(5000)
+		.then(() => something());
+
+In general, given a function defined as
+	function fn(args, cb) { ... }
+	fn(args, (result) => { ... });
+it can be promisified as
+	function promisified_fn(args) {
+		return new Promise((resolve, reject) =>
+			fn(args, (result) => resolve(result)));
+	}
+	promisified_fn(args).then((result) => { ... });
+
+Conversely, to wrap a promise API in a callback API looks like thise.  Using the
+timeoutPromise from above, we start with the following (C-like) synopsis:
+	/*[Promise]*/ function timeoutPromise(/*int*/ milliseconds);
+
+This can be made wrapped by a callback like thus:
+	function timeoutCallback(milliseconds, callback) {
+		timeoutPromise(milliseconds).then(callback);
+	}
+
+And the use case changes from:
+	timeoutPromise(5000).then(() => { ... });
+to:
+	timeoutCallback(5000, () = { ... });
+
+In general, given
+	function promised(args) { ... };
+	promised(args).then(() => {...});
+we can make it a callback with
+	function calledBack(args, callback) {
+		promised(args).then(callback);
+	}
+	calledBack(args, () => { ... });
+
+V. In code already defined known to be asynchronous, some of the complexity of
+promises can be hidden with the async and await keywords.  That is, given a
+function that would return its (asynchronous) result wrapped in a Promise, it
+can be declared to be async, and the verbosity around creating the Promise can
+be omitted.  Similarly, code that would call the asynchronous function and
+continue its work in a .then() handler can instead call the function with the
+await keyword.  An async function always returns a Promise on which you can
+call .then() or .catch() handlers.  Alternately, calling an async function (or
+any Promise) with await returns the fulfilled result of the function or Promise.
+
+For example, given an asynchronous function like fetch():
+	/*[Promise]*/ function fetch(/*String*/ url);
+	fetch(some_url_string)
+		.then(response => console.log(response.data))
+		.catch(error => console.log(error));
+You can do (ignoring errors, and omitting the .catch()):
+	let response = await fetch(some_url_string);
+	console.log(response.data);
+To include the error handling, you can do:
+	try {
+		let response = await fetch(some_url_string);
+		console.log(response.data);
+	} catch (error) {
+		console.log(error);
+	}
+... which much more closely resembles the normal programming paradigm, and mostly
+hides the fact that fetch() returns a Promise.
+
+Some limitations are: You can only use await in a function that is already
+declared to be async, or in a JavaScript module.  (It is also generally allowed
+by the REPLs in browsers' Developer Tools consoles and in NodeJS's REPL.)
+
+
+
+
+
+
